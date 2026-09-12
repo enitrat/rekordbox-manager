@@ -46,7 +46,7 @@ def execute(request):
 
         del sqlcipher3
         return {"version": importlib.metadata.version("pyrekordbox"), "running": running()}
-    if running():
+    if request["operation"] in ("apply", "relocate") and running():
         return {
             "error": {
                 "code": "rekordbox-running",
