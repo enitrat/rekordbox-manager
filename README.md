@@ -33,6 +33,8 @@ rbx backup --destination /path/to/iCloud-or-Google-Drive-folder
 
 Adoption hashes each local Rekordbox track, creates one managed copy, and records its existing Rekordbox content ID. It does not move or delete the original file, and it does not rewrite the Rekordbox database, so cues, beatgrids, ratings, and analysis remain attached to the same Rekordbox record. Identical files represented by multiple Rekordbox records are reported for review instead of merged automatically.
 
+Adoption does not guess that a local track is a particular Spotify or SoundCloud entry. If you follow a playlist afterward, spotDL/yt-dlp may perform one acquisition; the downloaded result is then hash-deduplicated against the adopted file. Future syncs reuse the recorded source relationship.
+
 The current adoption command imports collection tracks, not existing Rekordbox playlist memberships into the CLI's followed-playlist database. Those playlists are still preserved in the Rekordbox database and in complete snapshots. If you want a playlist to become online-owned and mirrored, use `rbx follow <playlist-url> --rekordbox-playlist-id <id>` after adoption; otherwise leave it as an independently curated Rekordbox playlist.
 
 To find the Rekordbox playlist ID for that explicit mapping:
