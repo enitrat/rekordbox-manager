@@ -108,6 +108,10 @@ def parser():
     )
     p.add_argument("--dry-run", action="store_true")
     command("tracks", "List shared library tracks and stable IDs")
+    p = command("rekordbox", "Inspect the current Rekordbox collection")
+    rb_sub = p.add_subparsers(dest="rekordbox_command", required=True)
+    q = rb_sub.add_parser("playlists", help="List Rekordbox playlist IDs and names")
+    options(q)
     p = command("issues", "List or resolve persistent acquisition issues")
     issue_sub = p.add_subparsers(dest="issue_command", required=True)
     p = issue_sub.add_parser("list", help="Show unresolved entries")
@@ -199,6 +203,10 @@ def dispatch(args, library):
         return service.sync(args.playlist, preview=args.dry_run, offline=args.offline)
     if command == "tracks":
         return {"tracks": library.rows("SELECT * FROM tracks ORDER BY title")}
+    if command == "rekordbox":
+        if args.rekordbox_command == "playlists":
+            return {"playlists": service.rekordbox.inventory()["playlists"]}
+        raise Problem("unknown-command", args.rekordbox_command)
     if command == "import":
         path = args.path.expanduser().resolve()
         from .audio import AUDIO_SUFFIXES
@@ -265,12 +273,13 @@ def partial(data):
         or p["membership_pending"]
         or p["error"]
         for p in status.get("playlists", [])
+        if "unresolved" in p
     )
 
 
 def human(data):
     status = data.get("status", data)
-    if "playlists" in status:
+    if "playlists" in status and (not status["playlists"] or "entries" in status["playlists"][0]):
         print("Rekordbox Manager")
         for p in status["playlists"]:
             print(f"\n{p['name']} — {p['entries']} entries")
@@ -309,6 +318,11 @@ def human(data):
             print(
                 "\nNext: rbx issues retry <id> · rbx issues ignore <id> · rbx issues resolve <id> --file <path>"
             )
+    elif "playlists" in data:
+        if not data["playlists"]:
+            print("No Rekordbox playlists found.")
+        for playlist in data["playlists"]:
+            print(f"{playlist['name']} · {playlist['id']}")
     elif "changes" in data:
         if not data["changes"]:
             print("No online playlists to scan.")

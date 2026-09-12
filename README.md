@@ -35,6 +35,12 @@ Adoption hashes each local Rekordbox track, creates one managed copy, and record
 
 The current adoption command imports collection tracks, not existing Rekordbox playlist memberships into the CLI's followed-playlist database. Those playlists are still preserved in the Rekordbox database and in complete snapshots. If you want a playlist to become online-owned and mirrored, use `rbx follow <playlist-url> --rekordbox-playlist-id <id>` after adoption; otherwise leave it as an independently curated Rekordbox playlist.
 
+To find the Rekordbox playlist ID for that explicit mapping:
+
+```sh
+rbx rekordbox playlists --json
+```
+
 Close Rekordbox before `sync` applies changes or before `backup`; read-only adoption and inventory can run while it is open.
 
 The project is an early implementation. Run the test suite with `uv run pytest -q`. The encrypted-database integration test is opt-in:
