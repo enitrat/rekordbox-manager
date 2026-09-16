@@ -20,6 +20,8 @@ Use `rbx --json` (or put `--json` after a command) for versioned agent output. `
 
 The library state defaults to `~/Music/RekordboxManager`; set `RBX_LIBRARY` or pass `--library`. The working library and backups are deliberately outside this source repository.
 
+When an online playlist is connected to a non-empty Rekordbox playlist, `rbx` requires a reviewed reconciliation before sync can change membership. It reuses exact identities and identical audio automatically, offers unique artist/title/duration matches for approval, and preserves every unmatched local entry.
+
 ## Adopting an existing Rekordbox collection
 
 `rbx adopt` is the backsync path for tracks you already imported and prepared in Rekordbox:
@@ -35,9 +37,25 @@ Adoption hashes each local Rekordbox track, creates one managed copy, and record
 
 Adoption does not guess that a local track is a particular Spotify or SoundCloud entry. If you follow a playlist afterward, spotDL/yt-dlp may perform one acquisition; the downloaded result is then hash-deduplicated against the adopted file. Future syncs reuse the recorded source relationship.
 
-The current adoption command imports collection tracks, not existing Rekordbox playlist memberships into the CLI's followed-playlist database. Those playlists are still preserved in the Rekordbox database and in complete snapshots. If you want a playlist to become online-owned and mirrored, use `rbx follow <playlist-url> --rekordbox-playlist-id <id>` after adoption; otherwise leave it as an independently curated Rekordbox playlist.
+The adoption command imports collection tracks, not existing Rekordbox playlist memberships into the CLI's followed-playlist database. Those playlists are still preserved in the Rekordbox database and in complete snapshots. To connect a followed online playlist to an existing prepared playlist:
 
-To find the Rekordbox playlist ID for that explicit mapping:
+```sh
+rbx rekordbox playlists --json
+rbx follow <playlist-url> --rekordbox-playlist-id <id>
+rbx reconcile "Playlist name"           # read-only review
+rbx reconcile "Playlist name" --apply --accept-suggestions
+```
+
+Exact content identities and identical file hashes require no approval. `--accept-suggestions` approves only unique artist/title matches with compatible duration. Ambiguous entries remain pending and can be selected explicitly:
+
+```sh
+rbx reconcile "Playlist name" --apply \
+  --match 'soundcloud:SOURCE_ID=REKORDBOX_CONTENT_ID'
+```
+
+Applying reconciliation places confirmed online entries in online order and keeps unmatched local entries afterward in their existing relative order. Later online removals remove only confirmed playlist memberships; audio, cues, analysis, collection records, other playlists, and local-only entries remain.
+
+To find Rekordbox playlist and content IDs for explicit mapping:
 
 ```sh
 rbx rekordbox playlists --json

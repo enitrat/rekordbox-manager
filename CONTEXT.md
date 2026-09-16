@@ -23,7 +23,10 @@ An online playlist selected for ongoing updates into the personal library.
 _Avoid_: Folder
 
 **Mirrored playlist**:
-The Rekordbox counterpart of a followed playlist, whose membership and order are governed by the online playlist. Unresolved entries can make the mirror incomplete.
+The Rekordbox counterpart of a followed playlist. Confirmed online memberships and their relative order are governed by the online playlist; unmatched local memberships remain user-owned. Unresolved entries can make the mirror incomplete.
+
+**Reconciliation**:
+The initial, reviewable process that establishes which entries in an online playlist correspond to which existing Rekordbox collection entries before online ownership is applied.
 
 **Playlist membership**:
 A library track's inclusion in a playlist, independent of its inclusion in any other playlist.
@@ -36,6 +39,12 @@ A requested source entry that cannot yet be made available as intended and needs
 
 **Confirmed match**:
 An established relationship between a source entry and a library track that can be reused in future updates.
+
+**Suggested match**:
+A unique artist/title/compatible-duration candidate presented for approval. It is not a confirmed relationship until approved.
+
+**Local-only membership**:
+An entry already present in a mirrored Rekordbox playlist that has no confirmed relationship to the online playlist. It remains until explicitly removed.
 
 **Library snapshot**:
 A recoverable version of the personal library, including its audio, preparation, playlists, and source relationships.

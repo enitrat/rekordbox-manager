@@ -17,6 +17,6 @@ Status: unanswered. No confidence threshold, provider, or automatic fallback cha
 - Prove import and preparation preservation, including behavior while Rekordbox is open.
 - Define acceptable audio and replacement behavior.
 - Prove a complete snapshot restore, then choose storage and optional automation.
-- Define adoption and playlist lifecycle details.
+- Define unfollow behavior and the lifecycle of preserved local-only memberships after the initial reconciliation model in [reconciliation-ux.md](reconciliation-ux.md).
 
 The historical handoff at `/tmp/rekordbox-management-handoff.md` informed this discussion but is not a normative specification or a durable dependency of these docs.

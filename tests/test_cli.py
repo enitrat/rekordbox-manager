@@ -1,6 +1,6 @@
 import json
 
-from rbx.cli import main
+from rbx.cli import main, parser
 from rbx.common import Problem, locked
 
 
@@ -30,3 +30,24 @@ def test_exclusive_library_lock(tmp_path):
                 raise AssertionError("Acquired duplicate lock")
         except Problem as exc:
             assert exc.code == "busy"
+
+
+def test_reconcile_cli_supports_review_bulk_approval_and_explicit_matches():
+    args = parser().parse_args(
+        [
+            "reconcile",
+            "Weekend digging",
+            "--apply",
+            "--accept-suggestions",
+            "--match",
+            "soundcloud:one=rb-content-1",
+            "--json",
+            "--no-input",
+        ]
+    )
+
+    assert args.command == "reconcile"
+    assert args.playlist == "Weekend digging"
+    assert args.apply is True
+    assert args.accept_suggestions is True
+    assert args.match == ["soundcloud:one=rb-content-1"]

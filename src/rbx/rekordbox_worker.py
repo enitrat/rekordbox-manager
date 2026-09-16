@@ -22,6 +22,7 @@ def serialize(content):
         "path": content.FolderPath,
         "title": content.Title or "",
         "artist": content.Artist.Name if content.Artist else "",
+        "duration": content.Length,
         "analysis_path": content.AnalysisDataPath or "",
         "preparation_hash": hashlib.sha256(
             json.dumps(
@@ -59,9 +60,22 @@ def execute(request):
         raise FileNotFoundError("Configured Rekordbox database does not exist")
     with Rekordbox6Database(path=path, db_dir=path.parent, unlock=True) as db:
         if request["operation"] == "inventory":
+            playlists = []
+            for playlist in db.get_playlist():
+                songs = sorted(
+                    db.get_playlist_songs(PlaylistID=playlist.ID).all(),
+                    key=lambda song: song.TrackNo,
+                )
+                playlists.append(
+                    {
+                        "id": str(playlist.ID),
+                        "name": playlist.Name,
+                        "content_ids": [str(song.ContentID) for song in songs],
+                    }
+                )
             return {
                 "tracks": [serialize(c) for c in db.get_content()],
-                "playlists": [{"id": str(p.ID), "name": p.Name} for p in db.get_playlist()],
+                "playlists": playlists,
             }
         if request["operation"] == "apply":
             content_map, playlists = {}, []
@@ -105,13 +119,29 @@ def execute(request):
                             "Playlist name already exists in Rekordbox; use follow --rekordbox-playlist-id to explicitly adopt it"
                         )
                     playlist = db.create_playlist(desired["name"])
-                content_ids = list(
+                managed_content_ids = list(
                     dict.fromkeys(str(content_map[t].ID) for t in desired["track_ids"])
+                )
+                content_ids = list(managed_content_ids)
+                content_ids.extend(
+                    content_id
+                    for content_id in desired.get("preserve_content_ids", [])
+                    if content_id not in content_ids
+                    and db.get_content(ID=content_id) is not None
                 )
                 songs = sorted(
                     db.get_playlist_songs(PlaylistID=playlist.ID).all(), key=lambda s: s.TrackNo
                 )
                 current_ids = [str(s.ContentID) for s in songs]
+                expected_content_ids = desired.get("expected_content_ids")
+                if expected_content_ids is not None and current_ids != expected_content_ids:
+                    return {
+                        "error": {
+                            "code": "reconciliation-stale",
+                            "message": f'Rekordbox playlist "{playlist.Name}" changed after review.',
+                            "action": "Run rbx reconcile again before applying changes.",
+                        }
+                    }
                 if current_ids != content_ids or [s.TrackNo for s in songs] != list(
                     range(1, len(songs) + 1)
                 ):
@@ -121,7 +151,12 @@ def execute(request):
                     for index, content_id in enumerate(content_ids, 1):
                         db.add_to_playlist(playlist, db.get_content(ID=content_id), track_no=index)
                 playlists.append(
-                    {"id": desired["id"], "rb_id": str(playlist.ID), "content_ids": content_ids}
+                    {
+                        "id": desired["id"],
+                        "rb_id": str(playlist.ID),
+                        "content_ids": content_ids,
+                        "managed_content_ids": managed_content_ids,
+                    }
                 )
             if request.get("journal"):
                 journal = Path(request["journal"])

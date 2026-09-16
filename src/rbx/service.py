@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -73,9 +74,11 @@ class Service:
 
     def follow(self, url, name=None, rb_id=None, preview=False):
         snapshot = self.providers.playlist(url)
+        existing_rb = None
         if rb_id:
             inventory = self.rekordbox.inventory()
-            if rb_id not in {p["id"] for p in inventory["playlists"]}:
+            existing_rb = next((p for p in inventory["playlists"] if p["id"] == rb_id), None)
+            if existing_rb is None:
                 raise Problem("not-found", "Requested Rekordbox playlist ID does not exist.")
             if self.library.one(
                 "SELECT id FROM playlists WHERE rb_id=? AND id!=?", (rb_id, snapshot["id"])
@@ -85,12 +88,39 @@ class Service:
                 )
         if not preview:
             self.save_playlist(snapshot, name=name, rb_id=rb_id)
+            if existing_rb and existing_rb.get("content_ids"):
+                self.library.set_setting(
+                    "reconciliation:" + snapshot["id"],
+                    {
+                        "state": "required",
+                        "rb_content_ids": existing_rb["content_ids"],
+                    },
+                )
+        requires_reconciliation = bool(existing_rb and existing_rb.get("content_ids"))
         return {
             "playlist": name or snapshot["name"],
             "id": snapshot["id"],
             "entries": len(snapshot["entries"]),
             "preview": preview,
-            "ownership": "Online membership and order overwrite edits to this Rekordbox mirror.",
+            "rekordbox_playlist": (
+                {
+                    "id": rb_id,
+                    "existing_entries": len(existing_rb.get("content_ids", [])),
+                }
+                if rb_id and existing_rb
+                else None
+            ),
+            "status": (
+                "reconciliation-required" if requires_reconciliation else "followed"
+            ),
+            "ownership": (
+                "Confirmed online memberships follow the online playlist; unmatched local memberships are preserved."
+            ),
+            "next": (
+                f'rbx reconcile "{name or snapshot["name"]}"'
+                if requires_reconciliation
+                else "rbx sync"
+            ),
             "duplicate_occurrences_collapsed": snapshot.get("duplicate_occurrences", 0),
         }
 
@@ -139,6 +169,256 @@ class Service:
                     self.library.db.commit()
         return reports
 
+    def reconcile(
+        self, selector, *, apply=False, accept_suggestions=False, matches=None, offline=False
+    ):
+        if not offline:
+            report = self.scan(selector)[0]
+            if "error" in report:
+                error = report["error"]
+                raise Problem(
+                    error["code"],
+                    error["message"],
+                    action=error.get("action", ""),
+                    details=error.get("details"),
+                )
+        playlist = self.library.playlists(selector)[0]
+        if not playlist["rb_id"]:
+            raise Problem(
+                "reconciliation-not-needed",
+                "This followed playlist is not linked to an existing Rekordbox playlist.",
+                action="Run rbx sync to create its Rekordbox mirror.",
+            )
+        inventory = self.rekordbox.inventory()
+        rb_playlist = next(
+            (item for item in inventory["playlists"] if item["id"] == playlist["rb_id"]),
+            None,
+        )
+        if rb_playlist is None:
+            raise Problem("not-found", "The linked Rekordbox playlist no longer exists.")
+        content = {item["id"]: item for item in inventory["tracks"]}
+        current_ids = rb_playlist.get("content_ids", [])
+        content_hashes = {}
+        for content_id in current_ids:
+            path = Path(content.get(content_id, {}).get("path") or "")
+            if path.is_file():
+                try:
+                    content_hashes[content_id] = digest(path)
+                except OSError:
+                    pass
+        sources = self.library.rows(
+            """SELECT s.* FROM memberships m JOIN sources s ON s.id=m.source_id
+            WHERE m.playlist_id=? ORDER BY m.position""",
+            (playlist["id"],),
+        )
+        exact, suggested, ambiguous, online_only = [], [], [], []
+        claimed = set()
+        for source in sources:
+            track = (
+                self.library.one("SELECT * FROM tracks WHERE id=?", (source["track_id"],))
+                if source["track_id"]
+                else None
+            )
+            if track and track["rb_id"] in current_ids:
+                exact.append(self.match_result(source, content[track["rb_id"]], "confirmed"))
+                claimed.add(track["rb_id"])
+                continue
+            hash_candidates = [
+                content[content_id]
+                for content_id in current_ids
+                if content_id not in claimed
+                and track
+                and content_hashes.get(content_id) == track["sha256"]
+            ]
+            if len(hash_candidates) == 1:
+                exact.append(self.match_result(source, hash_candidates[0], "file-hash"))
+                claimed.add(hash_candidates[0]["id"])
+                continue
+            if len(hash_candidates) > 1:
+                ambiguous.append(
+                    {
+                        "source_id": source["id"],
+                        "title": source["title"],
+                        "artist": source["artist"],
+                        "candidates": [
+                            self.match_result(source, item, "file-hash")
+                            for item in hash_candidates
+                        ],
+                    }
+                )
+                claimed.update(item["id"] for item in hash_candidates)
+                continue
+            candidates = [
+                item
+                for content_id in current_ids
+                if content_id not in claimed
+                and (item := content.get(content_id))
+                and self.suggested_match(source, item)
+            ]
+            if len(candidates) == 1:
+                suggested.append(self.match_result(source, candidates[0], "metadata"))
+                claimed.add(candidates[0]["id"])
+            elif len(candidates) > 1:
+                ambiguous.append(
+                    {
+                        "source_id": source["id"],
+                        "title": source["title"],
+                        "artist": source["artist"],
+                        "candidates": [
+                            self.match_result(source, item, "metadata") for item in candidates
+                        ],
+                    }
+                )
+                claimed.update(item["id"] for item in candidates)
+            else:
+                online_only.append(
+                    {
+                        "source_id": source["id"],
+                        "title": source["title"],
+                        "artist": source["artist"],
+                    }
+                )
+        local_only = [
+            {
+                "rb_content_id": content_id,
+                "title": content.get(content_id, {}).get("title", ""),
+                "artist": content.get(content_id, {}).get("artist", ""),
+            }
+            for content_id in current_ids
+            if content_id not in claimed
+        ]
+        plan = {
+            "playlist": playlist["name"],
+            "playlist_id": playlist["id"],
+            "rekordbox_playlist_id": playlist["rb_id"],
+            "status": "reconciliation-required",
+            "exact": exact,
+            "suggested": suggested,
+            "ambiguous": ambiguous,
+            "online_only": online_only,
+            "local_only": local_only,
+            "preview": not apply,
+        }
+        if not apply:
+            return plan
+
+        explicit = matches or {}
+        accepted = list(exact)
+        if accept_suggestions:
+            accepted.extend(suggested)
+        for source_id, rb_content_id in explicit.items():
+            source = next((item for item in sources if item["id"] == source_id), None)
+            rb_content = content.get(rb_content_id)
+            if source is None or rb_content_id not in current_ids or rb_content is None:
+                raise Problem(
+                    "invalid-match",
+                    f"Cannot match {source_id} to Rekordbox content {rb_content_id}.",
+                )
+            accepted = [item for item in accepted if item["source_id"] != source_id]
+            accepted.append(self.match_result(source, rb_content, "explicit"))
+        accepted_by_source = {item["source_id"]: item for item in accepted}
+        for source in sources:
+            match = accepted_by_source.get(source["id"])
+            if not match:
+                continue
+            track = self.adopt_rekordbox_content(content[match["rb_content_id"]])
+            self.library.db.execute(
+                "UPDATE sources SET track_id=? WHERE id=?", (track["id"], source["id"])
+            )
+        self.library.db.commit()
+        accepted_content_ids = {
+            item["rb_content_id"] for item in accepted_by_source.values()
+        }
+        pending = [
+            source["id"]
+            for source in sources
+            if source["id"] not in accepted_by_source
+            and any(
+                item["source_id"] == source["id"] for item in suggested + ambiguous
+            )
+        ]
+        self.library.set_setting(
+            "reconciliation:" + playlist["id"],
+            {
+                "state": "active",
+                "pending_sources": pending,
+                "preserve_content_ids": [
+                    content_id for content_id in current_ids if content_id not in accepted_content_ids
+                ],
+            },
+        )
+        result = self.sync(playlist["id"], refresh=False)
+        stale = next(
+            (error for error in result["errors"] if error["code"] == "reconciliation-stale"),
+            None,
+        )
+        if stale:
+            reconciliation = self.library.setting("reconciliation:" + playlist["id"], {})
+            reconciliation["state"] = "required"
+            self.library.set_setting("reconciliation:" + playlist["id"], reconciliation)
+        return {
+            **plan,
+            "status": "reconciliation-stale" if stale else "reconciled",
+            "preview": False,
+            "accepted": list(accepted_by_source.values()),
+            "pending_sources": pending,
+            "sync": result,
+        }
+
+    @staticmethod
+    def normalized(value):
+        return " ".join(re.findall(r"[a-z0-9]+", (value or "").casefold()))
+
+    def suggested_match(self, source, content):
+        if not source["title"] or not source["artist"]:
+            return False
+        if self.normalized(source["title"]) != self.normalized(content.get("title")):
+            return False
+        if self.normalized(source["artist"]) != self.normalized(content.get("artist")):
+            return False
+        source_duration = source.get("duration")
+        content_duration = content.get("duration")
+        return (
+            source_duration is not None
+            and content_duration is not None
+            and abs(float(source_duration) - float(content_duration)) <= 3
+        )
+
+    @staticmethod
+    def match_result(source, content, evidence):
+        return {
+            "source_id": source["id"],
+            "rb_content_id": content["id"],
+            "title": content.get("title", ""),
+            "artist": content.get("artist", ""),
+            "duration": content.get("duration"),
+            "evidence": evidence,
+        }
+
+    def adopt_rekordbox_content(self, content):
+        existing = self.library.one("SELECT * FROM tracks WHERE rb_id=?", (content["id"],))
+        if existing:
+            return existing
+        path = Path(content.get("path") or "")
+        if not path.is_file() or path.suffix.lower() not in AUDIO_SUFFIXES:
+            raise Problem(
+                "missing-local-audio",
+                f'Rekordbox content "{content.get("title") or content["id"]}" has no usable local audio.',
+            )
+        track = store_audio(
+            self.library,
+            path,
+            title=content.get("title", ""),
+            artist=content.get("artist", ""),
+            rb_id=content["id"],
+        )
+        self.library.db.execute(
+            "UPDATE tracks SET rb_id=? WHERE id=?", (content["id"], track["id"])
+        )
+        self.library.db.commit()
+        self.library.set_setting("adopt_path:" + track["id"], str(path))
+        return self.library.one("SELECT * FROM tracks WHERE id=?", (track["id"],))
+
     def acquire(self, source):
         lib = self.library
         if source["track_id"]:
@@ -184,8 +464,8 @@ class Service:
                     track = store_audio(
                         lib,
                         audio,
-                        title=source["title"],
-                        artist=source["artist"],
+                        title=acquisition.get("title") or source["title"],
+                        artist=acquisition.get("artist") or source["artist"],
                         expected_duration=source.get("duration") or acquisition.get("duration"),
                     )
             with lib.db:
@@ -208,15 +488,78 @@ class Service:
             lib.issue(source["id"], exc)
             raise
 
-    def sync(self, selector=None, *, preview=False, offline=False):
+    def sync(self, selector=None, *, preview=False, offline=False, refresh=True):
         lib = self.library
-        scans = [] if offline else self.scan(selector, preview=preview)
+        scans = [] if offline or not refresh else self.scan(selector, preview=preview)
         if preview:
             return {"preview": True, "changes": scans, "status": self.status(selector)}
         failed = {r["id"] for r in scans if "error" in r}
         playlists = [p for p in lib.playlists(selector) if p["id"] not in failed and not p["error"]]
         tracks, desired, errors = {}, [], []
+        rb_inventory = None
         for playlist in playlists:
+            reconciliation = lib.setting("reconciliation:" + playlist["id"])
+            rb_playlist = None
+            if playlist["rb_id"]:
+                rb_inventory = rb_inventory or self.rekordbox.inventory()
+                rb_playlist = next(
+                    (
+                        item
+                        for item in rb_inventory["playlists"]
+                        if item["id"] == playlist["rb_id"]
+                    ),
+                    None,
+                )
+            if reconciliation and reconciliation.get("state") == "required":
+                errors.append(
+                    {
+                        "code": "reconciliation-required",
+                        "message": (
+                            f'Review "{playlist["name"]}" before changing its existing '
+                            "Rekordbox membership."
+                        ),
+                        "action": f'rbx reconcile "{playlist["name"]}"',
+                    }
+                )
+                continue
+            if (
+                playlist["provider"] != "local"
+                and reconciliation is None
+                and rb_playlist
+                and rb_playlist.get("content_ids")
+                and lib.setting("managed:" + playlist["id"]) is None
+            ):
+                lib.set_setting(
+                    "reconciliation:" + playlist["id"],
+                    {
+                        "state": "required",
+                        "rb_content_ids": rb_playlist["content_ids"],
+                    },
+                )
+                errors.append(
+                    {
+                        "code": "reconciliation-required",
+                        "message": (
+                            f'Review legacy mapping "{playlist["name"]}" before its next sync.'
+                        ),
+                        "action": f'rbx reconcile "{playlist["name"]}"',
+                    }
+                )
+                continue
+            preserve_content_ids = []
+            expected_content_ids = None
+            if rb_playlist:
+                expected_content_ids = rb_playlist.get("content_ids", [])
+            if reconciliation and reconciliation.get("state") == "active":
+                previous_managed = lib.setting("managed:" + playlist["id"])
+                if rb_playlist and previous_managed is not None:
+                    preserve_content_ids = [
+                        content_id
+                        for content_id in rb_playlist.get("content_ids", [])
+                        if content_id not in previous_managed
+                    ]
+                else:
+                    preserve_content_ids = reconciliation.get("preserve_content_ids", [])
             members = lib.rows(
                 """SELECT s.* FROM memberships m JOIN sources s ON s.id=m.source_id
                 WHERE m.playlist_id=? ORDER BY m.position""",
@@ -224,6 +567,8 @@ class Service:
             )
             track_ids = []
             for source in members:
+                if source["id"] in (reconciliation or {}).get("pending_sources", []):
+                    continue
                 issue = lib.one("SELECT * FROM issues WHERE source_id=?", (source["id"],))
                 if issue:
                     if issue["status"] == "ignored":
@@ -254,6 +599,8 @@ class Service:
                     "name": playlist["name"],
                     "rb_id": playlist["rb_id"],
                     "track_ids": track_ids,
+                    "preserve_content_ids": preserve_content_ids,
+                    "expected_content_ids": expected_content_ids,
                 }
             )
         rb_result = None
@@ -274,6 +621,14 @@ class Service:
                             "UPDATE playlists SET rb_id=? WHERE id=?",
                             (playlist["rb_id"], playlist["id"]),
                         )
+                        if "managed_content_ids" in playlist:
+                            lib.db.execute(
+                                "INSERT OR REPLACE INTO settings VALUES (?,?)",
+                                (
+                                    "managed:" + playlist["id"],
+                                    json.dumps(playlist["managed_content_ids"]),
+                                ),
+                            )
                 for playlist in desired:
                     lib.set_setting("applied:" + playlist["id"], playlist["track_ids"])
                 (lib.root / "pending-rekordbox.json").unlink(missing_ok=True)
@@ -385,11 +740,15 @@ class Service:
 
     def issues(self, include_closed=False):
         issues = self.library.rows(
-            """SELECT i.*,s.title,s.url FROM issues i JOIN sources s ON s.id=i.source_id """
+            """SELECT i.*,s.title,s.url,s.provider_id FROM issues i
+            JOIN sources s ON s.id=i.source_id """
             + ("" if include_closed else "WHERE i.status='open' ")
             + "ORDER BY i.updated"
         )
         for issue in issues:
+            if issue["title"] == issue["provider_id"]:
+                issue["provider_title"] = issue["title"]
+                issue["title"] = None
             issue["playlists"] = [
                 p["name"]
                 for p in self.library.rows(

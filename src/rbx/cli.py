@@ -75,9 +75,32 @@ def parser():
     p.add_argument("--name")
     p.add_argument(
         "--rekordbox-playlist-id",
-        help="Explicitly take ownership of an existing Rekordbox playlist",
+        help="Connect an existing playlist; non-empty playlists require reconciliation",
     )
     p.add_argument("--dry-run", action="store_true")
+    p = command(
+        "reconcile",
+        "Review or apply identity matches before managing an existing Rekordbox playlist",
+    )
+    p.add_argument("playlist")
+    p.add_argument("--apply", action="store_true")
+    p.add_argument(
+        "--offline",
+        action="store_true",
+        help="Use cached online membership while still inspecting Rekordbox",
+    )
+    p.add_argument(
+        "--accept-suggestions",
+        action="store_true",
+        help="Approve all unique artist, title, and compatible-duration suggestions",
+    )
+    p.add_argument(
+        "--match",
+        action="append",
+        default=[],
+        metavar="SOURCE_ID=REKORDBOX_CONTENT_ID",
+        help="Confirm one explicit source-to-Rekordbox relationship; repeat as needed",
+    )
     p = command("unfollow", "Stop updates; retain audio and the existing Rekordbox playlist")
     p.add_argument("playlist")
     p = command(
@@ -185,7 +208,12 @@ def dispatch(args, library):
     if command == "doctor":
         return {"checks": doctor(library)}
     if command == "follow":
-        return service.follow(args.url, args.name, args.rekordbox_playlist_id, args.dry_run)
+        return service.follow(
+            args.url,
+            args.name,
+            args.rekordbox_playlist_id,
+            args.dry_run,
+        )
     if command == "unfollow":
         playlist = library.playlists(args.playlist)[0]
         library.db.execute("UPDATE playlists SET active=0 WHERE id=?", (playlist["id"],))
@@ -195,6 +223,23 @@ def dispatch(args, library):
             "status": "unfollowed",
             "retained": "audio, preparation, Rekordbox playlist",
         }
+    if command == "reconcile":
+        matches = {}
+        for value in args.match:
+            source_id, separator, content_id = value.partition("=")
+            if not separator or not source_id or not content_id:
+                raise Problem(
+                    "invalid-match",
+                    "Use --match SOURCE_ID=REKORDBOX_CONTENT_ID.",
+                )
+            matches[source_id] = content_id
+        return service.reconcile(
+            args.playlist,
+            apply=args.apply,
+            accept_suggestions=args.accept_suggestions,
+            matches=matches,
+            offline=args.offline,
+        )
     if command == "status":
         return service.status(getattr(args, "playlist", None))
     if command == "scan":
@@ -260,6 +305,8 @@ def dispatch(args, library):
 
 
 def partial(data):
+    if data.get("pending_sources"):
+        return True
     if data.get("preview"):
         return any("error" in change for change in data.get("changes", []))
     if data.get("errors") or any(not c["ok"] for c in data.get("checks", [])):
@@ -311,8 +358,11 @@ def human(data):
         if not data["issues"]:
             print("No unresolved issues.")
         for issue in data["issues"]:
-            print(f"\n{issue['title']} · {issue['code']} · {issue['status']}")
-            print(f"  {issue['message']}\n  ID: {issue['id']}")
+            print(
+                f"\n{issue['title'] or 'Metadata unavailable'} · "
+                f"{issue['code']} · {issue['status']}"
+            )
+            print(f"  {issue['message']}\n  Source: {issue['url']}\n  ID: {issue['id']}")
             print(f"  Playlists: {', '.join(issue['playlists']) or 'no active playlists'}")
         if data["issues"]:
             print(
@@ -334,6 +384,53 @@ def human(data):
                     f"{change['name']} · {len(change['added'])} new · {len(change['removed'])} removed · {'reordered' if change['reordered'] else 'order unchanged'}"
                 )
         print("\nPreview only. Run rbx sync to apply.")
+    elif "exact" in data and "suggested" in data and "local_only" in data:
+        print(f"{data['playlist']} · {data['status'].replace('-', ' ')}")
+        print(f"\n  {len(data['exact']):2} exact matches")
+        print(f"  {len(data['suggested']):2} suggested matches")
+        print(f"  {len(data['ambiguous']):2} ambiguous online entries")
+        print(f"  {len(data['online_only']):2} online-only entries")
+        print(f"  {len(data['local_only']):2} local-only Rekordbox entries")
+        if data["suggested"]:
+            print("\nSuggested matches (approval required)")
+            for item in data["suggested"]:
+                print(
+                    f"  {item['source_id']} → {item['title']} · {item['artist']} "
+                    f"[{item['rb_content_id']}]"
+                )
+        if data["ambiguous"]:
+            print("\nAmbiguous entries")
+            for item in data["ambiguous"]:
+                choices = ", ".join(
+                    f"{candidate['title']} [{candidate['rb_content_id']}]"
+                    for candidate in item["candidates"]
+                )
+                print(f"  {item['source_id']} → {choices}")
+        if data["online_only"]:
+            print("\nOnline entries without a match")
+            for item in data["online_only"]:
+                print(f"  {item['source_id']} · {item['title']} · {item['artist']}")
+        if data["local_only"]:
+            print("\nLocal Rekordbox entries that will be kept")
+            for item in data["local_only"]:
+                print(
+                    f"  {item['title'] or 'Untitled'} · {item['artist']} "
+                    f"[{item['rb_content_id']}]"
+                )
+        if data.get("preview"):
+            print("\nNo Rekordbox entries were changed.")
+            if data["suggested"]:
+                print(
+                    f'Next: rbx reconcile "{data["playlist"]}" --apply --accept-suggestions'
+                )
+            else:
+                print(f'Next: rbx reconcile "{data["playlist"]}" --apply')
+        elif data.get("pending_sources"):
+            print(
+                f"\nApplied confident work; {len(data['pending_sources'])} entries still need a decision."
+            )
+        else:
+            print("\nReconciliation applied. Future syncs preserve unmatched local entries.")
     elif "tracks" in data:
         for track in data["tracks"]:
             print(f"{track.get('title', track.get('rb_id', 'Track'))} · {track.get('artist', '')}")

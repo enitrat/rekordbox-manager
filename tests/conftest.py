@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from rbx.common import Problem
 from rbx.state import Library
 
 
@@ -72,20 +73,68 @@ class FakeRekordbox:
         self.tracks = {}
         self.playlists = {}
         self.failure = None
+        self.before_apply = None
+
+    def inventory(self):
+        return {
+            "tracks": list(self.tracks.values()),
+            "playlists": [
+                {
+                    "id": playlist_id,
+                    "name": playlist_id,
+                    "content_ids": list(track_ids),
+                }
+                for playlist_id, track_ids in self.playlists.items()
+            ],
+        }
 
     def apply(self, tracks, playlists):
         if self.failure:
             raise self.failure
+        if self.before_apply:
+            callback, self.before_apply = self.before_apply, None
+            callback()
+        content_ids = {}
         for track in tracks:
-            self.tracks.setdefault(track["id"], {"cues": [1234, 2345], **track})
+            content_id = track.get("rb_id") or "rb-" + track["id"]
+            content_ids[track["id"]] = content_id
+            self.tracks.setdefault(
+                content_id, {"id": content_id, "cues": [1234, 2345], **track}
+            )
         for playlist in playlists:
-            self.playlists[playlist["id"]] = list(playlist["track_ids"])
+            playlist_id = playlist.get("rb_id") or playlist["id"]
+            expected = playlist.get("expected_content_ids")
+            if expected is not None and self.playlists.get(playlist_id, []) != expected:
+                raise Problem(
+                    "reconciliation-stale",
+                    "Rekordbox playlist changed after it was reviewed.",
+                )
+            managed = [content_ids[track_id] for track_id in playlist["track_ids"]]
+            preserved = [
+                content_id
+                for content_id in playlist.get("preserve_content_ids", [])
+                if content_id not in managed
+            ]
+            self.playlists[playlist_id] = managed + preserved
         return {
             "tracks": [
-                {"id": t["id"], "rb_id": "rb-" + t["id"], "analysis": "needs-analysis"}
+                {
+                    "id": t["id"],
+                    "rb_id": content_ids[t["id"]],
+                    "analysis": "needs-analysis",
+                }
                 for t in tracks
             ],
-            "playlists": [{"id": p["id"], "rb_id": "rb-" + p["id"]} for p in playlists],
+            "playlists": [
+                {
+                    "id": p["id"],
+                    "rb_id": p.get("rb_id") or p["id"],
+                    "managed_content_ids": [
+                        content_ids[track_id] for track_id in p["track_ids"]
+                    ],
+                }
+                for p in playlists
+            ],
         }
 
 

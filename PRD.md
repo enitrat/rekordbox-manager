@@ -38,7 +38,9 @@ The user's existing audio and Rekordbox preparation must be accommodated. Adopti
 
 The user registers each playlist once. A global or playlist-scoped sync discovers differences, acquires or reuses audio, and updates the corresponding Rekordbox playlist. Routine confident work proceeds without a confirmation for every track; an optional preview exposes planned changes.
 
-Online additions add available tracks. Online removals remove only the mirrored membership, retaining audio, preparation, and other playlist memberships. Online reordering updates the mirror. Edits to membership or order inside a mirrored Rekordbox playlist are overwritten by the next successful reconciliation; this ownership must be visible when following a playlist.
+Connecting an online playlist to a non-empty Rekordbox playlist begins with a read-only reconciliation. Exact known relationships are reused automatically. A unique artist/title/compatible-duration candidate may be preselected for bulk approval, but is not confirmed without approval; ambiguous versions require an individual decision. Existing memberships with no confirmed online relationship remain until explicitly removed.
+
+After reconciliation, online additions add available tracks. Online removals remove only confirmed online memberships, retaining audio, preparation, other playlist memberships, and unmatched local entries. Online reordering updates the relative order of confirmed online entries; preserved local entries follow them in their existing relative order. This ownership boundary must be visible when following a playlist.
 
 Independently curated Rekordbox playlists are not reconciled against online sources. Track preparation remains intact when memberships change. Repeated syncs must not create duplicate files, collection entries, or playlist memberships.
 
@@ -153,13 +155,14 @@ Being present in Rekordbox does not, by itself, establish that analysis is compl
 
 1. Follow two playlists containing the same identified track. Sync acquires it once and creates one Rekordbox collection entry referenced by both playlists. Running again adds no duplicates.
 2. Remove that track from one online playlist. Only that mirrored membership disappears; the other membership, audio, and cues survive. Removing its final followed membership still retains the library track.
-3. Reorder the online playlist. Acquired entries follow that order without recreating their collection records. A failed or partial playlist fetch causes no inferred removals.
-4. Two services list similarly named recordings without a confirmed relationship. They are not silently merged. A confirmed match is remembered for future runs.
-5. One entry fails acquisition. Other entries complete, the issue persists with useful actions, and a later local import can resolve it without changing the online playlist.
-6. Rekordbox is open or an operation is interrupted. Completed audio acquisition is retained and a later sync finishes pending work without duplicate downloads or lost preparation.
-7. An agent runs noninteractively. Output is parseable JSON, no prompt blocks execution, and unresolved choices and partial completion are explicit.
-8. Restore a validated snapshot to a different local path on a replacement computer. Audio, playlists, source relationships, cues, and associated preparation remain accessible. A divergent destination is not silently overwritten.
-9. Setup finds a broken dependency. It identifies the failing component and offers an actionable remedy rather than failing later with an opaque conversion error.
+3. Connect a non-empty prepared Rekordbox playlist. Reconciliation reuses exact identities, offers unique artist/title/duration candidates for explicit bulk approval, and keeps unmatched local memberships. No playlist membership changes before the reviewed plan is applied.
+4. Reorder the online playlist. Confirmed online entries follow that order without recreating their collection records; preserved local entries retain their relative order afterward. A failed or partial playlist fetch causes no inferred removals.
+5. Two services list similarly named recordings without a confirmed relationship. They are not silently merged. A confirmed match is remembered for future runs.
+6. One entry fails acquisition. Other entries complete, the issue persists with useful actions, and a later local import can resolve it without changing the online playlist.
+7. Rekordbox is open or an operation is interrupted. Completed audio acquisition is retained and a later sync finishes pending work without duplicate downloads or lost preparation.
+8. An agent runs noninteractively. Output is parseable JSON, no prompt blocks execution, and unresolved choices and partial completion are explicit.
+9. Restore a validated snapshot to a different local path on a replacement computer. Audio, playlists, source relationships, cues, and associated preparation remain accessible. A divergent destination is not silently overwritten.
+10. Setup finds a broken dependency. It identifies the failing component and offers an actionable remedy rather than failing later with an opaque conversion error.
 
 ## Open decisions and feasibility work
 
@@ -169,7 +172,7 @@ Resolve these through focused discussion and experiments; historical scripts do 
 - Rekordbox integration: supported import/export versus direct database access; version compatibility, closing requirements, preservation, and automatic analysis capabilities.
 - Audio policy: minimum acceptable quality, preview detection evidence, and safe file replacement.
 - Setup: supported tool versions, isolated installation, authentication, and upgrade behavior.
-- Existing-library adoption: confidence rules and whether existing audio is moved, copied, or registered in place.
+- Existing-library adoption: whether existing audio is moved, copied, or registered in place. Playlist identity and confidence behavior are specified in [the reconciliation UX](docs/reconciliation-ux.md).
 - Backup: complete snapshot contents, consistency, restore compatibility, retention, storage cost, cloud completion visibility, and optional automation.
 - Playlist lifecycle: unfollow behavior, naming conflicts, source renames, and duplicate occurrences of one source entry. Proposed unfollow default is to retain an ordinary editable Rekordbox playlist; this is not yet a separately confirmed decision.
 - Final command names, JSON schema, exit codes, and any interactive dashboard layout.

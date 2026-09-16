@@ -175,6 +175,10 @@ class Providers:
         return {
             "id": acquired_id,
             "url": data.get("webpage_url") or url,
+            # Flat playlist entries can contain only a provider ID. Resolve the
+            # recording before download so Rekordbox receives real tags.
+            "title": data.get("track") or data.get("title") or "",
+            "artist": data.get("artist") or data.get("uploader") or data.get("creator") or "",
             "duration": data.get("duration"),
             "downloader": "spotdl+yt-dlp" if source["provider"] == "spotify" else "yt-dlp",
             "settings": {"format": "bestaudio/best", "audio_format": "mp3", "audio_quality": "0"},
