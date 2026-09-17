@@ -292,7 +292,14 @@ def test_sync_removes_managed_membership_but_keeps_new_local_extras(library, aud
     }
     rb.playlists["rb-existing"] = ["rb-match", "rb-local"]
     service.follow("A", rb_id="rb-existing")
-    service.reconcile("A", apply=True, accept_suggestions=True)
+    reconciliation = service.reconcile("A", apply=True, accept_suggestions=True)
+    assert reconciliation["accepted"][0]["rb_content_id"] == "rb-match"
+    playlist = library.playlists("A")[0]
+    source = library.one("SELECT track_id FROM sources WHERE id='soundcloud:stay-high'")
+    assert library.one("SELECT rb_id FROM tracks WHERE id=?", (source["track_id"],))[
+        "rb_id"
+    ] == "rb-match"
+    assert library.setting("managed:" + playlist["id"]) == ["rb-match"]
     rb.playlists["rb-existing"].append("rb-later")
     provider.playlists["A"] = snapshot("A", [])
 
@@ -424,3 +431,60 @@ def test_reconcile_applies_the_same_online_snapshot_it_reviews(library, audio):
     assert result["online_only"] == []
     assert [item["rb_content_id"] for item in result["local_only"]] == ["rb-local"]
     assert rb.playlists["rb-existing"] == ["rb-local"]
+
+
+def test_reconcile_enriches_legacy_numeric_metadata_before_matching(
+    library, audio, tmp_path
+):
+    service, provider, rb = setup(library, audio)
+    online = snapshot("A", ["1922615624"])
+    online["entries"][0].update(
+        {"title": "1922615624", "artist": "", "duration": 2}
+    )
+    provider.playlists["A"] = online
+    service.follow("A")
+    service.sync()
+    prepared = tmp_path / "prepared.wav"
+    prepared_bytes = bytearray(audio.read_bytes())
+    prepared_bytes[-8] ^= 1
+    prepared.write_bytes(prepared_bytes)
+    rb.tracks["rb-prepared"] = {
+        "id": "rb-prepared",
+        "title": "House On Fire",
+        "artist": "L.zwo",
+        "duration": 2,
+        "path": str(prepared),
+        "cues": [1234],
+    }
+    rb.playlists["rb-existing"] = ["rb-prepared"]
+    service.follow("A", rb_id="rb-existing")
+
+    def resolve(source):
+        provider.resolutions += 1
+        return {
+            "id": source["acquisition_id"],
+            "url": source["acquisition_url"],
+            "title": "L.zwo - House On Fire",
+            "artist": "L.zwo",
+            "duration": 2,
+            "downloader": "fake",
+            "settings": {},
+        }
+
+    provider.resolve = resolve
+    plan = service.reconcile("A")
+
+    assert plan["metadata_enriched"] == 1
+    assert plan["suggested"][0]["source_id"] == "soundcloud:1922615624"
+    assert plan["suggested"][0]["rb_content_id"] == "rb-prepared"
+    assert rb.playlists["rb-existing"] == ["rb-prepared"]
+    provider.playlists["A"]["entries"][0]["duration"] = None
+    service.scan("A")
+    enriched = library.one(
+        "SELECT title,artist,duration FROM sources WHERE id='soundcloud:1922615624'"
+    )
+    assert enriched == {
+        "title": "L.zwo - House On Fire",
+        "artist": "L.zwo",
+        "duration": 2,
+    }

@@ -85,6 +85,17 @@ def execute(request):
                     raise ValueError(
                         "Recorded Rekordbox identity points at a different path; adopt or repair first"
                     )
+                if content is not None and str(content.Title or "").strip().isdigit():
+                    artist_id = content.ArtistID
+                    if track["artist"]:
+                        artist = db.get_artist(Name=track["artist"]).first() or db.add_artist(
+                            track["artist"]
+                        )
+                        artist_id = artist.ID
+                    content.Title = track["title"]
+                    content.SrcTitle = track["title"]
+                    content.SrcArtistName = track["artist"]
+                    content.ArtistID = artist_id
                 if content is None:
                     matches = db.get_content(FolderPath=track["path"]).all()
                     if len(matches) > 1:

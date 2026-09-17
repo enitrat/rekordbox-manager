@@ -50,9 +50,17 @@ class Service:
             )
             for entry in snapshot["entries"]:
                 lib.db.execute(
-                    """INSERT INTO sources (id,provider,provider_id,url,title,artist,duration)
-                    VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,
-                    artist=excluded.artist,duration=excluded.duration,url=excluded.url""",
+                """INSERT INTO sources (id,provider,provider_id,url,title,artist,duration)
+                VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                title=CASE WHEN excluded.title=excluded.provider_id
+                    AND sources.title!=sources.provider_id THEN sources.title
+                    ELSE excluded.title END,
+                artist=CASE WHEN excluded.title=excluded.provider_id AND sources.artist!=''
+                    THEN sources.artist ELSE excluded.artist END,
+                duration=COALESCE(excluded.duration,sources.duration),
+                url=CASE WHEN excluded.title=excluded.provider_id
+                    AND sources.title!=sources.provider_id THEN sources.url
+                    ELSE excluded.url END""",
                     (
                         entry["id"],
                         entry["provider"],
@@ -211,6 +219,50 @@ class Service:
             WHERE m.playlist_id=? ORDER BY m.position""",
             (playlist["id"],),
         )
+        metadata_enriched = 0
+        for source in sources:
+            if (
+                offline
+                or source["provider"] != "soundcloud"
+                or not self.placeholder_title(source)
+            ):
+                continue
+            try:
+                resolved = self.providers.metadata(source)
+            except Problem:
+                continue
+            title = resolved.get("title") or source["title"]
+            artist = resolved.get("artist") or source["artist"]
+            if self.normalized(title) == self.normalized(source["title"]) and not artist:
+                continue
+            with self.library.db:
+                self.library.db.execute(
+                    """UPDATE sources SET title=?,artist=?,duration=COALESCE(?,duration),
+                    url=? WHERE id=?""",
+                    (
+                        title,
+                        artist,
+                        resolved.get("duration"),
+                        resolved.get("url") or source["url"],
+                        source["id"],
+                    ),
+                )
+                if source.get("track_id"):
+                    track = self.library.one(
+                        "SELECT title,artist FROM tracks WHERE id=?", (source["track_id"],)
+                    )
+                    if track and self.placeholder_value(track["title"], source["provider_id"]):
+                        self.library.db.execute(
+                            "UPDATE tracks SET title=?,artist=? WHERE id=?",
+                            (title, artist, source["track_id"]),
+                        )
+            metadata_enriched += 1
+        if metadata_enriched:
+            sources = self.library.rows(
+                """SELECT s.* FROM memberships m JOIN sources s ON s.id=m.source_id
+                WHERE m.playlist_id=? ORDER BY m.position""",
+                (playlist["id"],),
+            )
         exact, suggested, ambiguous, online_only = [], [], [], []
         claimed = set()
         for source in sources:
@@ -297,6 +349,7 @@ class Service:
             "ambiguous": ambiguous,
             "online_only": online_only,
             "local_only": local_only,
+            "metadata_enriched": metadata_enriched,
             "preview": not apply,
         }
         if not apply:
@@ -324,6 +377,10 @@ class Service:
             track = self.adopt_rekordbox_content(content[match["rb_content_id"]])
             self.library.db.execute(
                 "UPDATE sources SET track_id=? WHERE id=?", (track["id"], source["id"])
+            )
+            self.library.db.execute(
+                "UPDATE issues SET status='resolved',updated=? WHERE source_id=?",
+                (now(), source["id"]),
             )
         self.library.db.commit()
         accepted_content_ids = {
@@ -369,10 +426,33 @@ class Service:
     def normalized(value):
         return " ".join(re.findall(r"[a-z0-9]+", (value or "").casefold()))
 
+    @classmethod
+    def normalized_title(cls, title, artist):
+        normalized = cls.normalized(title)
+        prefix = cls.normalized(artist)
+        if prefix and normalized.startswith(prefix + " "):
+            return normalized[len(prefix) + 1 :]
+        return normalized
+
+    @classmethod
+    def placeholder_value(cls, value, provider_id):
+        candidate = str(value or "").strip().casefold()
+        provider_id = str(provider_id or "").strip().casefold()
+        return candidate in {
+            provider_id,
+            "soundcloud:" + provider_id,
+        }
+
+    @classmethod
+    def placeholder_title(cls, source):
+        return cls.placeholder_value(source.get("title"), source.get("provider_id"))
+
     def suggested_match(self, source, content):
         if not source["title"] or not source["artist"]:
             return False
-        if self.normalized(source["title"]) != self.normalized(content.get("title")):
+        if self.normalized_title(source["title"], source["artist"]) != self.normalized_title(
+            content.get("title"), content.get("artist")
+        ):
             return False
         if self.normalized(source["artist"]) != self.normalized(content.get("artist")):
             return False

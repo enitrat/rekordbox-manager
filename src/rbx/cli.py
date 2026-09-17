@@ -314,6 +314,8 @@ def partial(data):
     if any("error" in change for change in data.get("changes", [])):
         return True
     status = data.get("status", data)
+    if not isinstance(status, dict):
+        status = data.get("sync", {}).get("status", {})
     return any(
         p["unresolved"]
         or p["missing_audio"] > p["ignored"]
@@ -391,6 +393,8 @@ def human(data):
         print(f"  {len(data['ambiguous']):2} ambiguous online entries")
         print(f"  {len(data['online_only']):2} online-only entries")
         print(f"  {len(data['local_only']):2} local-only Rekordbox entries")
+        if data.get("metadata_enriched"):
+            print(f"\nRefreshed metadata for {data['metadata_enriched']} source entries.")
         if data["suggested"]:
             print("\nSuggested matches (approval required)")
             for item in data["suggested"]:

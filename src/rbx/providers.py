@@ -184,6 +184,34 @@ class Providers:
             "settings": {"format": "bestaudio/best", "audio_format": "mp3", "audio_quality": "0"},
         }
 
+    def metadata(self, source):
+        url = source.get("acquisition_url") or source["url"]
+        data = json.loads(
+            run(
+                [
+                    tool(self.library, "yt-dlp"),
+                    "--ignore-config",
+                    "--no-playlist",
+                    "--ignore-no-formats-error",
+                    "--dump-single-json",
+                    "--skip-download",
+                    "--no-warnings",
+                    "--",
+                    url,
+                ]
+            )
+        )
+        if str(data.get("id")) != str(source["provider_id"]):
+            raise Problem(
+                "source-changed", "Metadata URL resolves to a different provider identity."
+            )
+        return {
+            "title": data.get("track") or data.get("title") or "",
+            "artist": data.get("artist") or data.get("uploader") or data.get("creator") or "",
+            "duration": data.get("duration"),
+            "url": data.get("webpage_url") or url,
+        }
+
     def download(self, acquisition, destination: Path):
         destination.mkdir(parents=True, exist_ok=True)
         output = run(

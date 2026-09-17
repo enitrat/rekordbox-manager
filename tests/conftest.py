@@ -61,6 +61,9 @@ class FakeProviders:
             "settings": {},
         }
 
+    def metadata(self, source):
+        return self.resolve(source)
+
     def download(self, acquisition, destination):
         self.downloads += 1
         result = Path(destination) / "audio.wav"
